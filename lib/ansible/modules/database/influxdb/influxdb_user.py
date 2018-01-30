@@ -150,7 +150,6 @@ EXAMPLES = '''
     login_username: "{{ influxdb_username }}"
     login_password: "{{ influxdb_password }}"
     state: absent
->>>>>>> 2293252e529d4708c76ed2dc0dc60d7834a3eec9
 '''
 
 RETURN = '''
@@ -203,10 +202,6 @@ def main():
         user_name=dict(required=True, type='str'),
         user_password=dict(required=False, type='str', no_log=True),
         admin=dict(default='False', type='bool')
-<<<<<<< HEAD
-
-=======
->>>>>>> 2293252e529d4708c76ed2dc0dc60d7834a3eec9
     )
     module = AnsibleModule(
         argument_spec=argument_spec,
