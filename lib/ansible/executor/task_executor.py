@@ -35,6 +35,24 @@ except ImportError:
 __all__ = ['TaskExecutor']
 
 
+def remove_omit(task_args, omit_token):
+    '''
+    Remove args with a value equal to the ``omit_token`` recursively
+    to align with now having suboptions in the argument_spec
+    '''
+    new_args = {}
+
+    for i in iteritems(task_args):
+        if i[1] == omit_token:
+            continue
+        elif isinstance(i[1], dict):
+            new_args[i[0]] = remove_omit(i[1], omit_token)
+        else:
+            new_args[i[0]] = i[1]
+
+    return new_args
+
+
 class TaskExecutor:
 
     '''
@@ -486,6 +504,7 @@ class TaskExecutor:
             self._connection._play_context = self._play_context
 
         self._set_connection_options(variables, templar)
+        self._set_shell_options(variables, templar)
 
         # get handler
         self._handler = self._get_action_handler(connection=self._connection, templar=templar)
@@ -493,7 +512,7 @@ class TaskExecutor:
         # And filter out any fields which were set to default(omit), and got the omit token value
         omit_token = variables.get('omit')
         if omit_token is not None:
-            self._task.args = dict((i[0], i[1]) for i in iteritems(self._task.args) if i[1] != omit_token)
+            self._task.args = remove_omit(self._task.args, omit_token)
 
         # Read some values from the task, so that we can modify them if need be
         if self._task.until:
@@ -576,7 +595,8 @@ class TaskExecutor:
                     result['failed'] = False
 
             # Make attempts and retries available early to allow their use in changed/failed_when
-            result['attempts'] = attempt
+            if self._task.until:
+                result['attempts'] = attempt
 
             # set the changed property if it was missing.
             if 'changed' not in result:
@@ -743,6 +763,7 @@ class TaskExecutor:
         self._play_context.set_options_from_plugin(connection)
 
         if any(((connection.supports_persistence and C.USE_PERSISTENT_CONNECTIONS), connection.force_persistence)):
+            self._play_context.timeout = C.PERSISTENT_COMMAND_TIMEOUT
             display.vvvv('attempting to start connection', host=self._play_context.remote_addr)
             display.vvvv('using connection plugin %s' % connection.transport, host=self._play_context.remote_addr)
             socket_path = self._start_connection()
@@ -773,6 +794,15 @@ class TaskExecutor:
 
         # set options with 'templated vars' specific to this plugin
         self._connection.set_options(var_options=options)
+        self._set_shell_options(final_vars, templar)
+
+    def _set_shell_options(self, variables, templar):
+        option_vars = C.config.get_plugin_vars('shell', self._connection._shell._load_name)
+        options = {}
+        for k in option_vars:
+            if k in variables:
+                options[k] = templar.template(variables[k])
+        self._connection._shell.set_options(var_options=options)
 
     def _get_action_handler(self, connection, templar):
         '''
@@ -822,6 +852,7 @@ class TaskExecutor:
         stdin.write(src)
 
         stdin.write(b'\n#END_INIT#\n')
+        stdin.flush()
 
         (stdout, stderr) = p.communicate()
         stdin.close()
@@ -838,7 +869,7 @@ class TaskExecutor:
         if 'error' in result:
             if self._play_context.verbosity > 2:
                 msg = "The full traceback is:\n" + result['exception']
-                display.display(result['exception'], color=C.COLOR_ERROR)
+                display.display(msg, color=C.COLOR_ERROR)
             raise AnsibleError(result['error'])
 
         return result['socket_path']

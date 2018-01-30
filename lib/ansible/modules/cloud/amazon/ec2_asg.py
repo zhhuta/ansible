@@ -41,11 +41,11 @@ options:
     required: true
   load_balancers:
     description:
-      - List of ELB names to use for the group
+      - List of ELB names to use for the group. Use for classic load balancers.
     required: false
   target_group_arns:
     description:
-      - List of target group ARNs to use for the group
+      - List of target group ARNs to use for the group. Use for application load balancers.
     version_added: "2.4"
   availability_zones:
     description:
@@ -1089,29 +1089,31 @@ def delete_autoscaling_group(connection):
         del_notification_config(connection, group_name, notification_topic)
     groups = describe_autoscaling_groups(connection, group_name)
     if groups:
+        wait_timeout = time.time() + wait_timeout
         if not wait_for_instances:
             delete_asg(connection, group_name, force_delete=True)
-            return True
+        else:
+            updated_params = dict(AutoScalingGroupName=group_name, MinSize=0, MaxSize=0, DesiredCapacity=0)
+            update_asg(connection, **updated_params)
+            instances = True
+            while instances and wait_for_instances and wait_timeout >= time.time():
+                tmp_groups = describe_autoscaling_groups(connection, group_name)
+                if tmp_groups:
+                    tmp_group = tmp_groups[0]
+                    if not tmp_group.get('Instances'):
+                        instances = False
+                time.sleep(10)
 
-        wait_timeout = time.time() + wait_timeout
-        updated_params = dict(AutoScalingGroupName=group_name, MinSize=0, MaxSize=0, DesiredCapacity=0)
-        update_asg(connection, **updated_params)
-        instances = True
-        while instances and wait_for_instances and wait_timeout >= time.time():
-            tmp_groups = describe_autoscaling_groups(connection, group_name)
-            if tmp_groups:
-                tmp_group = tmp_groups[0]
-                if not tmp_group.get('Instances'):
-                    instances = False
-            time.sleep(10)
+            if wait_timeout <= time.time():
+                # waiting took too long
+                module.fail_json(msg="Waited too long for old instances to terminate. %s" % time.asctime())
 
+            delete_asg(connection, group_name, force_delete=False)
+        while describe_autoscaling_groups(connection, group_name) and wait_timeout >= time.time():
+            time.sleep(5)
         if wait_timeout <= time.time():
             # waiting took too long
-            module.fail_json(msg="Waited too long for old instances to terminate. %s" % time.asctime())
-
-        delete_asg(connection, group_name, force_delete=False)
-        while describe_autoscaling_groups(connection, group_name):
-            time.sleep(5)
+            module.fail_json(msg="Waited too long for ASG to delete. %s" % time.asctime())
         return True
 
     return False
@@ -1416,16 +1418,12 @@ def main():
     replace_instances = module.params.get('replace_instances')
     replace_all_instances = module.params.get('replace_all_instances')
     region, ec2_url, aws_connect_params = get_aws_connection_info(module, boto3=True)
-    try:
-        connection = boto3_conn(module,
-                                conn_type='client',
-                                resource='autoscaling',
-                                region=region,
-                                endpoint=ec2_url,
-                                **aws_connect_params)
-    except (botocore.exceptions.NoCredentialsError, botocore.exceptions.ProfileNotFound) as e:
-        module.fail_json(msg="Can't authorize connection. Check your credentials and profile.",
-                         exceptions=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
+    connection = boto3_conn(module,
+                            conn_type='client',
+                            resource='autoscaling',
+                            region=region,
+                            endpoint=ec2_url,
+                            **aws_connect_params)
     changed = create_changed = replace_changed = False
 
     if state == 'present':

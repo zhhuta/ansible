@@ -27,7 +27,8 @@ notes:
 options:
   name:
     description:
-      - Name of the Interface to be configured on remote device.
+      - Name of the Interface to be configured on remote device. The name of interface
+        should be in expanded format and not abbreviated.
     required: true
   description:
     description:
@@ -78,6 +79,7 @@ options:
         operationally up and C(down) means present and operationally C(down)
     default: present
     choices: ['present', 'absent', 'up', 'down']
+extends_documentation_fragment: eos
 """
 
 EXAMPLES = """

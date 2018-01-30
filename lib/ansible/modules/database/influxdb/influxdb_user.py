@@ -17,6 +17,7 @@ DOCUMENTATION = '''
 module: influxdb_user
 short_description: Manage InfluxDB users
 description:
+<<<<<<< HEAD
     - Manage InfluxDB users
 version_added: 2.5
 author: "Vitaliy Zhhuta (@zhhuta)"
@@ -92,6 +93,64 @@ EXAMPLES = '''
       user_password: "{{influxdb_user_password}}"
       admin: true
       state: present
+=======
+  - Manage InfluxDB users
+version_added: 2.5
+author: "Vitaliy Zhhuta (@zhhuta)"
+requirements:
+  - "python >= 2.6"
+  - "influxdb >= 0.9"
+options:
+  user_name:
+    description:
+      - Name of the user.
+    required: True
+  user_password:
+    description:
+      - Password to be set for the user.
+    required: false
+  admin:
+    description:
+      - Whether the user should be in the admin role or not.
+    default: no
+    choices: [ yes, no]
+  state:
+    description:
+      - State of the user.
+    choices: [ present, absent ]
+    default: present
+extends_documentation_fragment: influxdb
+'''
+
+EXAMPLES = '''
+- name: Create a user on localhost using default login credentials
+  influxdb_user:
+    user_name: john
+    user_password: s3cr3t
+
+- name: Create a user on localhost using custom login credentials
+  influxdb_user:
+    user_name: john
+    user_password: s3cr3t
+    login_username: "{{ influxdb_username }}"
+    login_password: "{{ influxdb_password }}"
+
+- name: Create an admin user on a remote host using custom login credentials
+  influxdb_user:
+    user_name: john
+    user_password: s3cr3t
+    admin: yes
+    hostname: "{{ influxdb_hostname }}"
+    login_username: "{{ influxdb_username }}"
+    login_password: "{{ influxdb_password }}"
+
+- name: Destroy a user using custom login credentials
+  influxdb_user:
+    user_name: john
+    login_username: "{{ influxdb_username }}"
+    login_password: "{{ influxdb_password }}"
+    state: absent
+>>>>>>> 2293252e529d4708c76ed2dc0dc60d7834a3eec9
 '''
 
 RETURN = '''
@@ -144,7 +203,10 @@ def main():
         user_name=dict(required=True, type='str'),
         user_password=dict(required=False, type='str', no_log=True),
         admin=dict(default='False', type='bool')
+<<<<<<< HEAD
 
+=======
+>>>>>>> 2293252e529d4708c76ed2dc0dc60d7834a3eec9
     )
     module = AnsibleModule(
         argument_spec=argument_spec,

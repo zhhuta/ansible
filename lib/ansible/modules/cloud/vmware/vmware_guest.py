@@ -55,7 +55,7 @@ options:
     - Please note that a supplied UUID will be ignored on VM creation, as VMware creates the UUID internally.
   template:
     description:
-    - Template used to create VM.
+    - Template or existing VM used to create VM.
     - If this value is not set, VM is created without using a template.
     - If the VM exists already this setting will be ignored.
   is_template:
@@ -78,7 +78,6 @@ options:
     - '   folder: /folder1/datacenter1/vm'
     - '   folder: folder1/datacenter1/vm'
     - '   folder: /folder1/datacenter1/vm/folder2'
-    default: /vm
   hardware:
     description:
     - Manage some VM hardware attributes.
@@ -618,6 +617,10 @@ class PyVmomiHelper(PyVmomi):
 
     def remove_vm(self, vm):
         # https://www.vmware.com/support/developer/converter-sdk/conv60_apireference/vim.ManagedEntity.html#destroy
+        if vm.summary.runtime.powerState.lower() == 'poweredon':
+            self.module.fail_json(msg="Virtual machine %s found in 'powered on' state, "
+                                      "please use 'force' parameter to remove or poweroff VM "
+                                      "and try removing VM again." % vm.name)
         task = vm.Destroy()
         self.wait_for_task(task)
 
@@ -944,18 +947,15 @@ class PyVmomiHelper(PyVmomi):
                 # VDS switch
                 pg_obj = find_obj(self.content, [vim.dvs.DistributedVirtualPortgroup], network_devices[key]['name'])
 
-                if (nic.device.backing and not hasattr(nic.device.backing, 'port')):
+                if vm_obj is None or (nic.device.backing and not hasattr(nic.device.backing, 'port')) or \
+                   (nic.device.backing and (nic.device.backing.port.portgroupKey != pg_obj.key or
+                                            nic.device.backing.port.switchUuid != pg_obj.config.distributedVirtualSwitch.uuid)):
+                    dvs_port_connection = vim.dvs.PortConnection()
+                    dvs_port_connection.portgroupKey = pg_obj.key
+                    dvs_port_connection.switchUuid = pg_obj.config.distributedVirtualSwitch.uuid
+                    nic.device.backing = vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo()
+                    nic.device.backing.port = dvs_port_connection
                     nic_change_detected = True
-                elif (nic.device.backing and (nic.device.backing.port.portgroupKey != pg_obj.key or
-                                              nic.device.backing.port.switchUuid != pg_obj.config.distributedVirtualSwitch.uuid)):
-                    nic_change_detected = True
-
-                dvs_port_connection = vim.dvs.PortConnection()
-                dvs_port_connection.portgroupKey = pg_obj.key
-                dvs_port_connection.switchUuid = pg_obj.config.distributedVirtualSwitch.uuid
-                nic.device.backing = vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo()
-                nic.device.backing.port = dvs_port_connection
-                nic_change_detected = True
             else:
                 # vSwitch
                 if not isinstance(nic.device.backing, vim.vm.device.VirtualEthernetCard.NetworkBackingInfo):
@@ -1266,6 +1266,32 @@ class PyVmomiHelper(PyVmomi):
 
         return datastore
 
+    def get_recommended_datastore(self, datastore_cluster_obj=None):
+        """
+        Function to return Storage DRS recommended datastore from datastore cluster
+        Args:
+            datastore_cluster_obj: datastore cluster managed object
+
+        Returns: Name of recommended datastore from the given datastore cluster
+
+        """
+        if datastore_cluster_obj is None:
+            return None
+        pod_sel_spec = vim.storageDrs.PodSelectionSpec()
+        pod_sel_spec.storagePod = datastore_cluster_obj
+        storage_spec = vim.storageDrs.StoragePlacementSpec()
+        storage_spec.podSelectionSpec = pod_sel_spec
+        storage_spec.type = 'create'
+
+        try:
+            rec = self.content.storageResourceManager.RecommendDatastores(storageSpec=storage_spec)
+            rec_action = rec.recommendations[0].action[0]
+            real_datastore_name = rec_action.destination.name
+        except Exception as e:
+            # There is some error so we fall back to general workflow
+            return None
+        return real_datastore_name
+
     def select_datastore(self, vm_obj=None):
         datastore = None
         datastore_name = None
@@ -1293,6 +1319,12 @@ class PyVmomiHelper(PyVmomi):
 
             elif 'datastore' in self.params['disk'][0]:
                 datastore_name = self.params['disk'][0]['datastore']
+                # Check if user has provided datastore cluster first
+                datastore_cluster = self.cache.find_obj(self.content, [vim.StoragePod], datastore_name)
+                if datastore_cluster:
+                    # If user specified datastore cluster so get recommended datastore
+                    datastore_name = self.get_recommended_datastore(datastore_cluster_obj=datastore_cluster)
+                # Check if get_recommended_datastore or user specified datastore exists or not
                 datastore = self.cache.find_obj(self.content, [vim.Datastore], datastore_name)
             else:
                 self.module.fail_json(msg="Either datastore or autoselect_datastore should be provided to select datastore")
@@ -1433,18 +1465,20 @@ class PyVmomiHelper(PyVmomi):
         # https://www.vmware.com/support/developer/vc-sdk/visdk41pubs/ApiReference/vim.vm.RelocateSpec.html
 
         # FIXME:
-        #   - multiple templates by the same name
         #   - static IPs
 
-        # datacenters = get_all_objs(self.content, [vim.Datacenter])
+        self.folder = self.params.get('folder', None)
+        if self.folder is None:
+            self.module.fail_json(msg="Folder is required parameter while deploying new virtual machine")
+
+        # Prepend / if it was missing from the folder path, also strip trailing slashes
+        if not self.folder.startswith('/'):
+            self.folder = '/%(folder)s' % self.params
+        self.folder = self.folder.rstrip('/')
+
         datacenter = self.cache.find_obj(self.content, [vim.Datacenter], self.params['datacenter'])
         if datacenter is None:
             self.module.fail_json(msg='No datacenter named %(datacenter)s was found' % self.params)
-
-        # Prepend / if it was missing from the folder path, also strip trailing slashes
-        if not self.params['folder'].startswith('/'):
-            self.params['folder'] = '/%(folder)s' % self.params
-        self.params['folder'] = self.params['folder'].rstrip('/')
 
         dcpath = compile_folder_path_for_object(datacenter)
 
@@ -1453,15 +1487,15 @@ class PyVmomiHelper(PyVmomi):
             dcpath += '/'
 
         # Check for full path first in case it was already supplied
-        if (self.params['folder'].startswith(dcpath + self.params['datacenter'] + '/vm') or
-                self.params['folder'].startswith(dcpath + '/' + self.params['datacenter'] + '/vm')):
-            fullpath = self.params['folder']
-        elif self.params['folder'].startswith('/vm/') or self.params['folder'] == '/vm':
-            fullpath = "%s%s%s" % (dcpath, self.params['datacenter'], self.params['folder'])
-        elif self.params['folder'].startswith('/'):
-            fullpath = "%s%s/vm%s" % (dcpath, self.params['datacenter'], self.params['folder'])
+        if (self.folder.startswith(dcpath + self.params['datacenter'] + '/vm') or
+                self.folder.startswith(dcpath + '/' + self.params['datacenter'] + '/vm')):
+            fullpath = self.folder
+        elif self.folder.startswith('/vm/') or self.folder == '/vm':
+            fullpath = "%s%s%s" % (dcpath, self.params['datacenter'], self.folder)
+        elif self.folder.startswith('/'):
+            fullpath = "%s%s/vm%s" % (dcpath, self.params['datacenter'], self.folder)
         else:
-            fullpath = "%s%s/vm/%s" % (dcpath, self.params['datacenter'], self.params['folder'])
+            fullpath = "%s%s/vm/%s" % (dcpath, self.params['datacenter'], self.folder)
 
         f_obj = self.content.searchIndex.FindByInventoryPath(fullpath)
 
@@ -1471,17 +1505,16 @@ class PyVmomiHelper(PyVmomi):
             details = {
                 'datacenter': datacenter.name,
                 'datacenter_path': dcpath,
-                'folder': self.params['folder'],
+                'folder': self.folder,
                 'full_search_path': fullpath,
             }
-            self.module.fail_json(msg='No folder %s matched in the search path : %s' % (self.params['folder'], fullpath),
+            self.module.fail_json(msg='No folder %s matched in the search path : %s' % (self.folder, fullpath),
                                   details=details)
 
         destfolder = f_obj
 
         if self.params['template']:
-            # FIXME: need to search for this in the same way as guests to ensure accuracy
-            vm_obj = find_obj(self.content, [vim.VirtualMachine], self.params['template'])
+            vm_obj = self.get_vm_or_template(template_name=self.params['template'])
             if vm_obj is None:
                 self.module.fail_json(msg="Could not find a template named %(template)s" % self.params)
         else:
@@ -1754,10 +1787,10 @@ def main():
         is_template=dict(type='bool', default=False),
         annotation=dict(type='str', aliases=['notes']),
         customvalues=dict(type='list', default=[]),
-        name=dict(type='str', required=True),
+        name=dict(type='str'),
         name_match=dict(type='str', choices=['first', 'last'], default='first'),
         uuid=dict(type='str'),
-        folder=dict(type='str', default='/vm'),
+        folder=dict(type='str'),
         guest_id=dict(type='str'),
         disk=dict(type='list', default=[]),
         cdrom=dict(type='dict', default={}),
@@ -1779,13 +1812,12 @@ def main():
                            mutually_exclusive=[
                                ['cluster', 'esxi_hostname'],
                            ],
+                           required_one_of=[
+                               ['name', 'uuid'],
+                           ],
                            )
 
     result = {'failed': False, 'changed': False}
-
-    # FindByInventoryPath() does not require an absolute path
-    # so we should leave the input folder path unmodified
-    module.params['folder'] = module.params['folder'].rstrip('/')
 
     pyv = PyVmomiHelper(module)
 
@@ -1796,13 +1828,36 @@ def main():
     if vm:
         if module.params['state'] == 'absent':
             # destroy it
+            if module.check_mode:
+                result.update(
+                    vm_name=vm.name,
+                    changed=True,
+                    current_powerstate=vm.summary.runtime.powerState.lower(),
+                    desired_operation='remove_vm',
+                )
+                module.exit_json(**result)
             if module.params['force']:
                 # has to be poweredoff first
                 set_vm_power_state(pyv.content, vm, 'poweredoff', module.params['force'])
             result = pyv.remove_vm(vm)
         elif module.params['state'] == 'present':
+            if module.check_mode:
+                result.update(
+                    vm_name=vm.name,
+                    changed=True,
+                    desired_operation='reconfigure_vm',
+                )
+                module.exit_json(**result)
             result = pyv.reconfigure_vm()
         elif module.params['state'] in ['poweredon', 'poweredoff', 'restarted', 'suspended', 'shutdownguest', 'rebootguest']:
+            if module.check_mode:
+                result.update(
+                    vm_name=vm.name,
+                    changed=True,
+                    current_powerstate=vm.summary.runtime.powerState.lower(),
+                    desired_operation='set_vm_power_state',
+                )
+                module.exit_json(**result)
             # set powerstate
             tmp_result = set_vm_power_state(pyv.content, vm, module.params['state'], module.params['force'])
             if tmp_result['changed']:
@@ -1815,6 +1870,12 @@ def main():
     # VM doesn't exist
     else:
         if module.params['state'] in ['poweredon', 'poweredoff', 'present', 'restarted', 'suspended']:
+            if module.check_mode:
+                result.update(
+                    changed=True,
+                    desired_operation='deploy_vm',
+                )
+                module.exit_json(**result)
             result = pyv.deploy_vm()
             if result['failed']:
                 module.fail_json(msg='Failed to create a virtual machine : %s' % result['msg'])

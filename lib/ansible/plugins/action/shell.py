@@ -22,4 +22,6 @@ class ActionModule(ActionBase):
                                                                    loader=self._loader,
                                                                    templar=self._templar,
                                                                    shared_loader_obj=self._shared_loader_obj)
-        return command_action.run(task_vars=task_vars)
+        result = command_action.run(task_vars=task_vars)
+
+        return result

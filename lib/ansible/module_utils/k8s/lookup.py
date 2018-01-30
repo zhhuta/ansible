@@ -21,12 +21,11 @@ from __future__ import absolute_import, division, print_function
 import json
 import os
 
-from ansible.module_utils.k8s.common import DateTimeEncoder, remove_secret_data, to_snake
+from ansible.module_utils.k8s.common import OpenShiftAnsibleModuleMixin, DateTimeEncoder, remove_secret_data, to_snake
 from ansible.module_utils.k8s.helper import AUTH_ARG_SPEC
 
 try:
     from openshift.helper.kubernetes import KubernetesObjectHelper
-    from openshift.helper.openshift import OpenShiftObjectHelper
     from openshift.helper.exceptions import KubernetesException
     HAS_K8S_MODULE_HELPER = True
 except ImportError as exc:
@@ -65,7 +64,6 @@ class KubernetesLookup(object):
         self.connection = {}
 
     def run(self, terms, variables=None, **kwargs):
-        self.mylog('Here!')
         self.kind = kwargs.get('kind')
         self.name = kwargs.get('resource_name')
         self.namespace = kwargs.get('namespace')
@@ -88,7 +86,7 @@ class KubernetesLookup(object):
             )
 
         self.kind = to_snake(self.kind)
-        self.helper = self.get_helper()
+        self.helper = self.get_helper(self.api_version, self.kind)
 
         for arg in AUTH_ARG_SPEC:
             self.connection[arg] = kwargs.get(arg)
@@ -101,19 +99,14 @@ class KubernetesLookup(object):
             )
 
         if self.name:
-            self.mylog("Calling get_object()")
             return self.get_object()
 
         return self.list_objects()
 
-    def mylog(self, msg):
-        with open('loggit.txt', 'a') as f:
-            f.write(msg + '\n')
-
-    def get_helper(self):
+    def get_helper(self, api_version, kind):
         try:
-            helper = KubernetesObjectHelper(api_version=self.api_version, kind=self.kind, debug=False)
-            helper.get_model(self.api_version, self.kind)
+            helper = KubernetesObjectHelper(api_version=api_version, kind=kind, debug=False)
+            helper.get_model(api_version, kind)
             return helper
         except KubernetesException as exc:
             raise Exception("Error initializing helper: {0}".format(exc.message))
@@ -145,7 +138,6 @@ class KubernetesLookup(object):
             result = self.helper.get_object(self.name, self.namespace)
         except KubernetesException as exc:
             raise Exception('Failed to retrieve requested object: {0}'.format(exc.message))
-        self.mylog("Got restult")
         response = []
         if result is not None:
             # Convert Datetime objects to ISO format
@@ -208,12 +200,5 @@ class KubernetesLookup(object):
         return response
 
 
-class OpenShiftLookup(KubernetesLookup):
-
-    def get_helper(self):
-        try:
-            helper = OpenShiftObjectHelper(api_version=self.api_version, kind=self.kind, debug=False)
-            helper.get_model(self.api_version, self.kind)
-            return helper
-        except KubernetesException as exc:
-            raise Exception("Error initializing helper: {0}".format(exc.message))
+class OpenShiftLookup(OpenShiftAnsibleModuleMixin, KubernetesLookup):
+    pass

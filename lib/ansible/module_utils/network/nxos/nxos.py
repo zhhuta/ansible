@@ -50,6 +50,7 @@ nxos_provider_spec = {
     'ssh_keyfile': dict(fallback=(env_fallback, ['ANSIBLE_NET_SSH_KEYFILE'])),
 
     'use_ssl': dict(type='bool'),
+    'use_proxy': dict(default=True, type='bool'),
     'validate_certs': dict(type='bool'),
 
     'timeout': dict(type='int'),
@@ -201,6 +202,13 @@ class Cli:
             if opts.get('ignore_timeout') and code:
                 msgs.append(code)
                 return msgs
+            elif code and 'no graceful-restart' in err:
+                if 'ISSU/HA will be affected if Graceful Restart is disabled' in err:
+                    msg = ['']
+                    msgs.extend(msg)
+                    return msgs
+                else:
+                    self._module.fail_json(msg=err)
             elif code:
                 self._module.fail_json(msg=err)
 
@@ -309,6 +317,7 @@ class Nxapi:
         headers = {'Content-Type': 'application/json'}
         result = list()
         timeout = self._module.params['timeout']
+        use_proxy = self._module.params['provider']['use_proxy']
 
         for req in requests:
             if self._nxapi_auth:
@@ -316,7 +325,7 @@ class Nxapi:
 
             response, headers = fetch_url(
                 self._module, self._url, data=req, headers=headers,
-                timeout=timeout, method='POST'
+                timeout=timeout, method='POST', use_proxy=use_proxy
             )
             self._nxapi_auth = headers.get('set-cookie')
 

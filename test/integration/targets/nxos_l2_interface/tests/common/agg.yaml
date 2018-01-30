@@ -1,5 +1,7 @@
 ---
-- debug: msg="START TRANSPORT:{{ connection.transport }} nxos_l2_interface aggregate test"
+- debug: msg="START connection={{ ansible_connection }} nxos_l2_interface aggregate test"
+- debug: msg="Using provider={{ connection.transport }}"
+  when: ansible_connection == "local"
 
 # Select interface for test
 - set_fact: intname1="{{ nxos_int1 }}"
@@ -9,6 +11,13 @@
   nxos_vlan:
     vlan_range: "6,15"
     provider: "{{ connection }}"
+
+- name: Setup - Ensure interfaces are layer2
+  nxos_interface:
+    aggregate:
+      - { name: "{{ intname1 }}" }
+      - { name: "{{ intname2 }}" }
+    mode: layer2
 
 - name: Setup - Remove interface aggregate before testing
   nxos_l2_interface:
@@ -68,4 +77,4 @@
       provider: "{{ connection }}"
     ignore_errors: yes
 
-- debug: msg="END TRANSPORT:{{ connection.transport }} nxos_l2_interface aggregate test"
+- debug: msg="END connection={{ ansible_connection }} nxos_l2_interface aggregate test"
